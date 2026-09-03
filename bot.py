@@ -8,6 +8,7 @@ import datetime
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 import requests
+import random
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -91,9 +92,13 @@ async def daily_birthday_check():
             f"🎉 It's a **multi-birthday day**! 🎉 \n{len(matches)} operators are celebrating today: **{names_list}**"
         )
     else:
-        await channel.send(
-            f"It's a special day today, let's wish **{matches[0]}** a happy birthday! 🎂"
-        )
+        SINGLE_BIRTHDAY_MESSAGES = [
+            "🎂 A special day today — let's wish **{name}** a happy birthday! 🎂",
+            "🎉 Today's the day! **{name}** is celebrating their birthday! 🎉",
+            "🥳 Everyone say happy birthday to **{name}**! 🥳",
+        ]
+        message = random.choice(SINGLE_BIRTHDAY_MESSAGES).format(name=matches[0])
+        await channel.send(message)
 
     for i in range(0, len(embeds), 10):
         chunk = embeds[i:i + 10]
