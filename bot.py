@@ -38,6 +38,9 @@ bot = AKBirthdayBot()
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Connected to {len(bot.guilds)} server(s):")
+    for guild in bot.guilds:
+        print(f" - {guild.name} (ID: {guild.id})")
 
 @bot.tree.command(name="ping", description="Check if the bot is alive")
 async def ping(interaction: discord.Interaction):
@@ -46,7 +49,7 @@ async def ping(interaction: discord.Interaction):
 
 with open("data/birthdays.json") as f:
     BIRTHDAYS = json.load(f)
-with open("data//operator_art.json") as f:
+with open("data/operator_art.json") as f:
     ART = json.load(f)
 
 @bot.tree.command(name="birthday", description="Look up an operator's birthday")
