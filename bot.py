@@ -111,7 +111,7 @@ async def daily_birthday_check():
 async def refresh_data_task():
     '''Refresh data to catch up with latest'''
     import subprocess
-    subprocess.run(["python", "fetch_ak_wiki_data.py"], cwd="data")
+    subprocess.run(["python", "fetch_ak_wiki_data.py"])
     global BIRTHDAYS, ART
     with open("data/birthdays.json") as f:
         BIRTHDAYS = json.load(f)
