@@ -59,7 +59,8 @@ async def reload_data():
     )
     _, err = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"Fetch script failed: {err.decode()[-500:]}")
+        lines = err.decode().strip().splitlines()
+        raise RuntimeError(lines[-1][:200] if lines else "unknown error")
     BIRTHDAYS, ART = load_data()
     print(f"Refreshed: {len(BIRTHDAYS)} birthdays, {len(ART)} art entries.")
 

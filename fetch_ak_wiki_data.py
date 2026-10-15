@@ -27,8 +27,7 @@ import requests
 
 API_URL = "https://arknights.wiki.gg/api.php"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    "User-Agent": "AKBirthdayBot/1.0 (Discord birthday bot; contact: https://github.com/karkin02)"
 }
 
 MONTHS = {
