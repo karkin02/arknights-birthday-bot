@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import asyncio
 import datetime
 from datetime import time as dtime
@@ -65,6 +66,16 @@ async def reload_data():
     print(f"Refreshed: {len(BIRTHDAYS)} birthdays, {len(ART)} art entries.")
 
 
+def norm(s: str) -> str:
+    return re.sub(r"\W", "", s.casefold())
+
+def find_operator(data: dict, query: str):
+    target = norm(query)
+    for key in data:
+        if norm(key) == target:
+            return key
+    return None
+
 
 # ===== Events =====
 @bot.event
@@ -90,8 +101,8 @@ async def ping(interaction: discord.Interaction):
 @app_commands.describe(operator="Operator name, e.g. Amiya")
 async def birthday(interaction: discord.Interaction, operator: str):
     '''Look up operators' birthday'''
-    name = operator.strip().title()
-    bday = BIRTHDAYS.get(name)
+    name = find_operator(BIRTHDAYS, operator)
+    bday = BIRTHDAYS.get(name) if name else None
     if bday:
         await interaction.response.send_message(f"🎂 **{name}**'s birthday is **{bday}**.")
     else:
@@ -167,8 +178,8 @@ async def testbirthday(interaction: discord.Interaction):
 
 @bot.tree.command(name="testart", description="Test operator artwork lookup")
 async def testart(interaction: discord.Interaction, operator: str):
-    name = operator.strip().title()
-    image_url =ART.get(name)
+    name = find_operator(ART, operator)
+    image_url = ART.get(name) if name else None    
     if not image_url:
         await interaction.response.send_message(f"No art found for '{operator}'.")
         return

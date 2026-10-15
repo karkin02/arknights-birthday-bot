@@ -22,6 +22,10 @@ Run:
 """
 
 import re
+import os
+import sys
+import time
+import datetime
 import json
 import requests
 
@@ -39,7 +43,23 @@ MONTHS = {
 BIRTHDAY_OUTPUT_FILE = "data/birthdays.json"
 ART_OUTPUT_FILE = "data/operator_art.json"
 IMAGE_BATCH_SIZE = 50
+PAGE_BATCH_SIZE = 20
+VALID_BDAY = re.compile(r"^\d{2}-\d{2}$")
+MONTH_RE = re.compile(r"\b(" + "|".join(MONTHS) + r")\s+(\d{1,2})(?!\d)")
 
+
+def get_with_retry(params, retries=5):
+    for attempt in range(retries):
+        resp = requests.get(API_URL, params=params, headers=HEADERS, timeout=30)
+        if resp.status_code in (429, 500, 502, 503, 504):
+            ra = resp.headers.get("Retry-After", "")
+            wait = int(ra) if ra.isdigit() else 5 * 2 ** attempt
+            print(f"HTTP {resp.status_code}, retrying in {wait}s...")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp
+    raise RuntimeError(f"Gave up after {retries} tries: HTTP {resp.status_code}")
 
 # ------------------------------------------------------------------
 # Shared helper: paginate through Cargo query results
@@ -85,16 +105,16 @@ def get_global_operator_names() -> list:
 # ------------------------------------------------------------------
 # BIRTHDAYS
 # ------------------------------------------------------------------
-def convert_date(bday_str: str):
-    """Converts 'December 23rd, 1083' or 'March 3rd' into 'MM-DD'."""
+def convert_date(bday_str):
     if not bday_str:
         return None
-    match = re.match(r"([A-Za-z]+)\s+(\d+)(st|nd|rd|th)?", bday_str)
-    if not match:
+    m = MONTH_RE.search(bday_str)
+    if not m:
         return None
-    month_name, day = match.group(1), int(match.group(2))
-    month = MONTHS.get(month_name)
-    if not month:
+    month, day = MONTHS[m.group(1)], int(m.group(2))
+    try:
+        datetime.date(2000, month, day)
+    except ValueError:
         return None
     return f"{month:02d}-{day:02d}"
 
@@ -113,17 +133,64 @@ def build_character_birthday_map() -> dict:
     return birthday_map
 
 
-def build_birthday_dataset(global_names: list) -> dict:
+def fetch_page_birthdates(names):
+    """Fallback: read the birthdate field straight from each operator's wiki page."""
+    result = {}
+    for i in range(0, len(names), PAGE_BATCH_SIZE):
+        chunk = names[i:i + PAGE_BATCH_SIZE]
+        params = {
+            "action": "query", "format": "json",
+            "prop": "revisions", "rvprop": "content", "rvslots": "main",
+            "redirects": "1", "titles": "|".join(chunk),
+        }
+        data = get_with_retry(params).json()
+        for page in data.get("query", {}).get("pages", {}).values():
+            rev = page.get("revisions")
+            if not rev:
+                continue
+            text = rev[0]["slots"]["main"]["*"]
+            m = re.search(r"\|\s*birthdate\s*=\s*([^\n|]*)", text)
+            if m:
+                result[page["title"]] = m.group(1).strip()
+        time.sleep(1)
+    return result
+
+
+def load_existing(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def build_birthday_dataset(global_names):
     print("Fetching Characters table (birthdates)...")
     birthday_map = build_character_birthday_map()
     print(f"Found {len(birthday_map)} character birthdate entries.")
 
-    dataset = {}
+    fresh = {}
     for name in global_names:
         bday = convert_date(birthday_map.get(name))
         if bday:
-            dataset[name] = bday
+            fresh[name] = bday
 
+    still_missing = [n for n in global_names if n not in fresh]
+    print(f"Checking wiki pages for {len(still_missing)} operators with no table entry...")
+    for name, raw in fetch_page_birthdates(still_missing).items():
+        bday = convert_date(raw)
+        if bday:
+            fresh[name] = bday
+    
+    gset = set(global_names)
+    kept = {
+        n: v for n, v in load_existing(BIRTHDAY_OUTPUT_FILE).items()
+        if n in gset and n not in fresh and VALID_BDAY.match(str(v))
+    }
+    if kept:
+        print(f"Kept {len(kept)} previous entries: {', '.join(kept)}")
+
+    dataset = {**kept, **fresh}
     print(f"Birthday dataset: {len(dataset)} Global operators.")
     return dataset
 
@@ -174,20 +241,34 @@ def build_art_dataset(global_names: list) -> dict:
     return dataset
 
 
+def write_json_atomic(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
 # ------------------------------------------------------------------
 # MAIN
 # ------------------------------------------------------------------
 if __name__ == "__main__":
-    print("Fetching Global operator list...")
     global_names = get_global_operator_names()
+    if not global_names:
+        sys.exit("No Global operators returned; aborting.")
     print(f"Found {len(global_names)} Global operator entries.\n")
 
     birthday_data = build_birthday_dataset(global_names)
-    with open(BIRTHDAY_OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(birthday_data, f, indent=2, ensure_ascii=False)
-    print(f"Saved birthdays to {BIRTHDAY_OUTPUT_FILE}\n")
-
     art_data = build_art_dataset(global_names)
-    with open(ART_OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(art_data, f, indent=2, ensure_ascii=False)
-    print(f"Saved art to {ART_OUTPUT_FILE}")
+
+    missing_art = [n for n in birthday_data if n not in art_data]
+    if missing_art:
+        print(f"No art found for: {', '.join(missing_art)}")
+
+    for path, new in [(BIRTHDAY_OUTPUT_FILE, birthday_data), (ART_OUTPUT_FILE, art_data)]:
+        old = len(load_existing(path))
+        if old and len(new) < old * 0.8:
+            sys.exit(f"Refusing to overwrite {path}: {len(new)} new vs {old} existing.")
+
+    write_json_atomic(BIRTHDAY_OUTPUT_FILE, birthday_data)
+    write_json_atomic(ART_OUTPUT_FILE, art_data)
+    print("Saved birthdays and art.")
