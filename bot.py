@@ -1,14 +1,17 @@
 import os
-import discord
-from discord import app_commands
-from discord.ext import commands, tasks
-from dotenv import load_dotenv
+import sys
 import json
+import asyncio
 import datetime
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 import requests
 import random
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -17,7 +20,7 @@ ANNOUNCE_CHANNEL_ID = int(os.getenv("ANNOUNCE_CHANNEL_ID"))
 MYT = ZoneInfo("Asia/Kuala_Lumpur")
 # SGT = ZoneInfo("Asia/Singapore")
 ANNOUNCE_TIME = datetime.time(hour=0, minute=0, tzinfo=MYT)
-FETCH_TIME = dtime(hour=3, minute=0, tzinfo=MYT)
+FETCH_TIME = dtime(hour=23, minute=0, tzinfo=MYT)
 
 intents = discord.Intents.default()
 
@@ -35,6 +38,34 @@ class AKBirthdayBot(commands.Bot):
 
 bot = AKBirthdayBot()
 
+
+# ===== Data =====
+def load_data():
+    with open("data/birthdays.json") as f:
+        birthdays = json.load(f)
+    with open ("data/operator_art.json") as f:
+        art = json.load(f)
+    return birthdays, art
+
+BIRTHDAYS, ART = load_data()
+
+async def reload_data():
+    '''Run fetch script without blocking bot, then reload JSON files'''
+    global BIRTHDAYS, ART
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "fetch_ak_wiki_data.py",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Fetch script failed: {err.decode()[-500:]}")
+    BIRTHDAYS, ART = load_data()
+    print(f"Refreshed: {len(BIRTHDAYS)} birthdays, {len(ART)} art entries.")
+
+
+
+# ===== Events =====
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -42,15 +73,17 @@ async def on_ready():
     for guild in bot.guilds:
         print(f" - {guild.name} (ID: {guild.id})")
 
+@bot.event
+async def on_guild_join(guild):
+    print(f"Joined new server: {guild.name} (ID: {guild.id})")
+
+
+
+# ===== Commands =====
 @bot.tree.command(name="ping", description="Check if the bot is alive")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!")
 
-
-with open("data/birthdays.json") as f:
-    BIRTHDAYS = json.load(f)
-with open("data/operator_art.json") as f:
-    ART = json.load(f)
 
 @bot.tree.command(name="birthday", description="Look up an operator's birthday")
 @app_commands.describe(operator="Operator name, e.g. Amiya")
@@ -62,6 +95,15 @@ async def birthday(interaction: discord.Interaction, operator: str):
         await interaction.response.send_message(f"🎂 **{name}**'s birthday is **{bday}**.")
     else:
         await interaction.response.send_message(f"I do not have the birthday data for **{operator}** yet.")
+
+
+# ===== Daily Announcement =====
+SINGLE_BIRTHDAY_MESSAGES = [
+    "🎂 A special day today — let's wish **{name}** a happy birthday! 🎂",
+    "🎉 Today's the day! **{name}** is celebrating their birthday! 🎉",
+    "🥳 Everyone say happy birthday to **{name}**! 🥳",
+]
+
 
 @tasks.loop(time=ANNOUNCE_TIME)
 async def daily_birthday_check():
@@ -95,11 +137,6 @@ async def daily_birthday_check():
             f"🎉 It's a **multi-birthday day**! 🎉 \n{len(matches)} operators are celebrating today: **{names_list}**"
         )
     else:
-        SINGLE_BIRTHDAY_MESSAGES = [
-            "🎂 A special day today — let's wish **{name}** a happy birthday! 🎂",
-            "🎉 Today's the day! **{name}** is celebrating their birthday! 🎉",
-            "🥳 Everyone say happy birthday to **{name}**! 🥳",
-        ]
         message = random.choice(SINGLE_BIRTHDAY_MESSAGES).format(name=matches[0])
         await channel.send(message)
 
@@ -107,17 +144,18 @@ async def daily_birthday_check():
         chunk = embeds[i:i + 10]
         await channel.send(embeds=chunk)
 
+
+# ===== Data Refresh =====
 @tasks.loop(time=FETCH_TIME)
 async def refresh_data_task():
-    '''Refresh data to catch up with latest'''
-    import subprocess
-    subprocess.run(["python", "fetch_ak_wiki_data.py"])
-    global BIRTHDAYS, ART
-    with open("data/birthdays.json") as f:
-        BIRTHDAYS = json.load(f)
-    with open ("data/operator_art.json") as f:
-        ART = json.load(f)
-    print("Refreshed birthday and art data.")
+    try:
+        await reload_data()
+    except Exception as e:
+        print(f"Refresh failed, keeping old data: {e}")
+
+@refresh_data_task.before_loop
+async def before_refresh():
+    await bot.wait_until_ready()
 
 
 # ===== Testing =====
@@ -136,5 +174,17 @@ async def testart(interaction: discord.Interaction, operator: str):
     embed = discord.Embed(title=name, color=discord.Color.blue())
     embed.set_image(url=image_url)
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="testrefresh", description="Manually refresh the data")
+async def testrefresh(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await reload_data()
+        await interaction.followup.send(
+            f"Refreshed: {len(BIRTHDAYS)} birthdays, {len(ART)} art entries."
+        )
+    except Exception as e:
+        await interaction.followup.send(f"Refresh failed: {e}")
+
 
 bot.run(TOKEN)
